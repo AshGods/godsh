@@ -154,7 +154,9 @@ echo ""
 echo -e "${GREEN}✅ 防火墙规则已成功生效${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-FORWARD_POLICY=$(iptables -P FORWARD | awk '{print $3}')
+# 兼容 Debian12/13 nftables 后端的 FORWARD 策略检测方式
+FORWARD_POLICY=$(iptables -L FORWARD -n 2>/dev/null | head -n 1 | grep -qi "ACCEPT" && echo "ACCEPT" || echo "DROP")
+
 if [ "$FORWARD_POLICY" = "ACCEPT" ]; then
     echo -e "🧱 FORWARD 链默认策略：🍏 ${GREEN}ACCEPT${NC}"
 else
