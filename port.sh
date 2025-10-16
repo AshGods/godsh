@@ -1,10 +1,11 @@
 #!/bin/bash
 #
 # port_forward_cn_only.sh
-# 端口转发中转服务器专用防火墙脚本（最终版）
+# 端口转发中转服务器专用防火墙脚本（最终整合版）
 # ✅ 仅限制 INPUT 入站（中国IP+白名单允许，其余全部DROP）
-# ✅ FORWARD 默认 ACCEPT，确保 Nypass / 转发功能不受影响
+# ✅ FORWARD 始终 ACCEPT，确保 Nypass / 转发功能不受影响
 # ✅ OUTPUT 始终 ACCEPT
+# ✅ 自动检测当前公网IP是否属于中国段，海外 IP 自动加入白名单并幽默提示
 # ✅ 日志限速记录 [FW-BLOCK]
 # ✅ 支持 Debian 9/10/11/12/13
 # ✅ 执行结束会显示彩色自检状态 🍏 ACCEPT / 🔴 DROP
@@ -17,7 +18,6 @@ WHITELIST_SET="cn_whitelist"
 CHINA_SET="china_ipset"
 IP_LIST_URL="https://www.ipdeny.com/ipblocks/data/countries/cn.zone"
 BACKUP_DIR="/root/firewall-backups"
-CRON_SCRIPT="/etc/cron.daily/update-china-ipset"
 LOG_PREFIX="[FW-BLOCK]"
 ENABLE_LOGGING=true
 # ================================================
@@ -89,26 +89,10 @@ if [ -z "$DETECTED_IP" ]; then
 fi
 log_info "当前公网IP: ${GREEN}${DETECTED_IP}${NC}"
 
-# 安全提示
-log_step "步骤 3/6: 安全确认"
-echo ""
-echo "🚨 请确认是否已将管理IP加入白名单："
-echo "  ipset create ${WHITELIST_SET} hash:ip 2>/dev/null || true"
-echo "  ipset add ${WHITELIST_SET} ${DETECTED_IP}"
-echo ""
-read -p "确认继续? 输入 yes 执行: " CONFIRM
-if [ "$CONFIRM" != "yes" ]; then
-    log_error "操作取消"
-    exit 1
-fi
-
-# 创建 ipset 集合
-log_step "步骤 4/6: 创建 IP 集合"
+log_step "步骤 3/6: 下载中国IP段并创建 IP 集合"
 ipset create "${CHINA_SET}" hash:net family inet 2>/dev/null || ipset flush "${CHINA_SET}"
 ipset create "${WHITELIST_SET}" hash:ip family inet 2>/dev/null || true
 
-# 下载 CN IP 段
-log_info "下载中国IP段..."
 TMPFILE=$(mktemp)
 curl -fsSL "$IP_LIST_URL" -o "$TMPFILE"
 COUNT=0
@@ -119,50 +103,78 @@ done < "$TMPFILE"
 rm -f "$TMPFILE"
 log_info "导入 ${GREEN}${COUNT}${NC} 条中国 IP 段"
 
-# 备份规则
-log_step "步骤 5/6: 备份现有规则"
+# 检测当前 IP 是否在中国段
+echo ""
+echo "🌏 检测当前IP是否属于中国段..."
+if ipset test "${CHINA_SET}" "${DETECTED_IP}" >/dev/null 2>&1; then
+    echo -e "🍏 当前IP ${GREEN}${DETECTED_IP}${NC} 属于中国，无需加入白名单"
+else
+    echo -e "🌍 当前IP ${YELLOW}${DETECTED_IP}${NC} 不在中国段"
+    echo -e "😎 为防止你把自己锁门外，我已贴心地将你加入白名单"
+    ipset add "${WHITELIST_SET}" "${DETECTED_IP}" 2>/dev/null || true
+fi
+# ==================== 备份并应用防火墙规则 ====================
+log_step "步骤 4/6: 备份现有 iptables 规则"
 BACKUP_FILE="${BACKUP_DIR}/iptables-$(date +%Y%m%d-%H%M%S).rules"
 iptables-save > "$BACKUP_FILE"
-log_info "保存到 ${BACKUP_FILE}"
+log_info "已备份到: ${BACKUP_FILE}"
 
-# 应用 INPUT 规则
-log_step "步骤 6/6: 应用防火墙规则 (INPUT ONLY)"
+log_step "步骤 5/6: 应用 INPUT 防火墙规则（仅限制入站）"
+
+# 清空 INPUT 旧规则
 iptables -F INPUT
-iptables -P FORWARD ACCEPT     # ✅ 确保转发链放行（适配 Nypass）
-iptables -P OUTPUT ACCEPT      # ✅ 出站无阻挡
 
+# ✅ 保证 FORWARD / OUTPUT 全部放行，避免影响 Nypass 转发
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+
+# 允许本地回环
 iptables -A INPUT -i lo -j ACCEPT
+
+# 允许已建立的连接
 iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# 放行白名单 IP
 iptables -A INPUT -m set --match-set "${WHITELIST_SET}" src -j ACCEPT
+
+# 放行中国 IP 段
 iptables -A INPUT -m set --match-set "${CHINA_SET}" src -j ACCEPT
+
+# 记录日志（限速）
 if [ "$ENABLE_LOGGING" = true ]; then
     iptables -A INPUT -m limit --limit 10/min -j LOG --log-prefix "${LOG_PREFIX} " --log-level 4
 fi
-iptables -A INPUT -j DROP
 
+# 拒绝所有其他入站
+iptables -A INPUT -j DROP
 # ==================== 自检状态输出 ====================
+log_step "步骤 6/6: 防火墙规则应用完成，自检状态如下"
+
 echo ""
-echo -e "${GREEN}✅ 防火墙规则已应用${NC}"
+echo -e "${GREEN}✅ 防火墙规则已成功生效${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 FORWARD_POLICY=$(iptables -P FORWARD | awk '{print $3}')
 if [ "$FORWARD_POLICY" = "ACCEPT" ]; then
     echo -e "🧱 FORWARD 链默认策略：🍏 ${GREEN}ACCEPT${NC}"
 else
     echo -e "🧱 FORWARD 链默认策略：🔴 ${RED}${FORWARD_POLICY}${NC}  (⚠ 如为中转服务器可能影响 Nypass)"
 fi
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "🔍 INPUT 链前20条规则如下："
+echo -e "🔍 INPUT 链前 20 条规则如下："
 iptables -L INPUT -n --line-numbers | head -n 20
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo ""
 echo -e "📌 若 SSH 被锁，可在云控制台执行紧急恢复："
-echo -e "    ${YELLOW}iptables -F INPUT && iptables -P INPUT ACCEPT${NC}"
+echo -e "   ${YELLOW}iptables -F INPUT && iptables -P INPUT ACCEPT${NC}"
 echo ""
-echo -e "或使用已生成的回滚脚本(如存在)："
-echo -e "    ${YELLOW}bash ${BACKUP_DIR}/rollback.sh${NC}"
+echo -e "📂 回滚备份文件位于：${GREEN}${BACKUP_FILE}${NC}"
+echo -e "   可还原：iptables-restore < ${BACKUP_FILE}"
 echo ""
-echo -e "${GREEN}✅ 防火墙已成功生效，当前服务器仅允许中国IP + 白名单访问${NC}"
+echo -e "${GREEN}🎯 当前服务器已仅允许 中国IP + 白名单 访问，出站与转发保持自由${NC}"
+echo -e "✨ 脚本执行完毕！祝你使用愉快 😎"
 echo ""
 
 exit 0
