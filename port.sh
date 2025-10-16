@@ -148,23 +148,20 @@ fi
 # 拒绝所有其他入站
 iptables -A INPUT -j DROP
 # ==================== 自检状态输出 ====================
-log_step "步骤 6/6: 防火墙规则应用完成，自检状态如下"
-
 echo ""
-echo -e "${GREEN}✅ 防火墙规则已成功生效${NC}"
+echo -e "${GREEN}✅ 防火墙规则已应用${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# 兼容 Debian12/13 nftables 后端的 FORWARD 策略检测方式
-FORWARD_POLICY=$(iptables -L FORWARD -n 2>/dev/null | head -n 1 | grep -qi "ACCEPT" && echo "ACCEPT" || echo "DROP")
+# 修复：正确获取 FORWARD 链策略
+FORWARD_POLICY=$(iptables -S | grep "^-P FORWARD" | awk '{print $3}')
 
 if [ "$FORWARD_POLICY" = "ACCEPT" ]; then
     echo -e "🧱 FORWARD 链默认策略：🍏 ${GREEN}ACCEPT${NC}"
 else
     echo -e "🧱 FORWARD 链默认策略：🔴 ${RED}${FORWARD_POLICY}${NC}  (⚠ 如为中转服务器可能影响 Nypass)"
 fi
-
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "🔍 INPUT 链前 20 条规则如下："
+echo -e "🔍 INPUT 链前20条规则如下："
 iptables -L INPUT -n --line-numbers | head -n 20
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
