@@ -20,14 +20,14 @@ usage() {
   ./setup-inbound-firewall.sh --dry-run --ports-file FILE --ssh-port PORT
   sudo /usr/local/sbin/inbound-firewall-sync --sync
 
-安装前请修改脚本顶部的 PORTS_URL。systemd 定时器每分钟下载一次远程文件，
-校验成功后更新本地缓存，并以原子方式应用新增和删除的端口。
+systemd 定时器每分钟下载一次固定的 PORTS_URL，校验成功后更新本地缓存，
+并以原子方式应用新增和删除的端口。
 
-PORTS_URL 必须返回与原始文件相同的逐行 JSON。每个 listen_port 都会同时
-放行 TCP 和 UDP。
+远程文件必须每行写一个端口，允许空行和以 # 开头的注释。每个端口都会
+同时放行 TCP 和 UDP。
 
 选项：
-  --ports-file FILE  仅在预览模式下使用本地 JSON 文件。
+  --ports-file FILE  仅在预览模式下使用本地端口文件。
   --dry-run          输出生成的规则，但不应用。
   --sync             立即下载并同步，供 systemd 调用。
   --ssh-port PORT    指定 SSH 端口，可重复使用；否则自动检测。
@@ -113,22 +113,15 @@ fi
 if [ "$MODE" = install ]; then
   [ "$(id -u)" -eq 0 ] || die '请使用 root 权限运行（使用 sudo）'
   validate_url "$PORTS_URL" || die 'PORTS_URL 必须使用 HTTPS'
-  case "$PORTS_URL" in
-    *CHANGE-ME*) die '安装前请先修改脚本中的 PORTS_URL' ;;
-  esac
   command -v apt-get >/dev/null 2>&1 || die '此安装脚本需要 Debian 的 apt-get'
   printf '正在更新软件包索引……\n'
   apt-get update
-  printf '正在安装 nftables、curl 和 jq……\n'
-  DEBIAN_FRONTEND=noninteractive apt-get install -y nftables curl jq
+  printf '正在安装 nftables 和 curl……\n'
+  DEBIAN_FRONTEND=noninteractive apt-get install -y nftables curl
 elif [ "$MODE" = sync ]; then
   [ "$(id -u)" -eq 0 ] || die '同步操作必须使用 root 权限运行'
   command -v curl >/dev/null 2>&1 || die '缺少 curl，继续保留上一版规则'
-  command -v jq >/dev/null 2>&1 || die '缺少 jq，继续保留上一版规则'
   validate_url "$PORTS_URL" || die 'PORTS_URL 必须使用 HTTPS，继续保留上一版规则'
-  case "$PORTS_URL" in
-    *CHANGE-ME*) die '请修改已安装脚本中的 PORTS_URL' ;;
-  esac
 else
   [ -n "$PORTS_FILE" ] || die '--dry-run 必须同时提供 --ports-file FILE'
 fi
@@ -146,26 +139,29 @@ if [ "$MODE" != dry-run ]; then
 fi
 
 [ -r "$PORTS_FILE" ] || die "无法读取端口源文件：$PORTS_FILE"
-command -v jq >/dev/null 2>&1 || die '提取 listen_port 需要 jq'
 
-if ! LISTEN_PORTS=$(jq -er '
-  def records:
-    if type == "object" then .
-    elif type == "array" then .[]
-    else error("每个 JSON 值必须是对象或对象数组")
-    end;
-
-  records
-  | .listen_port as $port
-  | if (($port | type) == "number"
-        and ($port | floor) == $port
-        and $port >= 1
-        and $port <= 65535)
-    then $port
-    else error("listen_port 必须是 1 到 65535 之间的整数")
-    end
+if ! LISTEN_PORTS=$(awk '
+  {
+    sub(/#.*/, "")
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+    if ($0 == "") next
+    if ($0 !~ /^[0-9]+$/ || $0 < 1 || $0 > 65535) {
+      printf "第 %d 行端口无效：%s\n", NR, $0 > "/dev/stderr"
+      bad = 1
+      next
+    }
+    print $0 + 0
+    found = 1
+  }
+  END {
+    if (!found) {
+      print "端口文件中没有有效端口" > "/dev/stderr"
+      bad = 1
+    }
+    exit bad
+  }
 ' "$PORTS_FILE" | sort -n -u); then
-  die 'JSON 或 listen_port 校验失败，继续保留上一版规则和本地缓存'
+  die '端口文件校验失败，继续保留上一版规则和本地缓存'
 fi
 
 detect_ssh_ports() {
@@ -256,7 +252,6 @@ fi
 [ "$(id -u)" -eq 0 ] || die '请使用 root 权限运行（使用 sudo）'
 command -v nft >/dev/null 2>&1 || die '缺少 nftables'
 command -v curl >/dev/null 2>&1 || die '缺少 curl'
-command -v jq >/dev/null 2>&1 || die '缺少 jq'
 command -v systemctl >/dev/null 2>&1 || die '缺少 systemctl'
 
 RULE_FILE=$(mktemp)
