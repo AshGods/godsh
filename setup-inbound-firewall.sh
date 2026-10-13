@@ -11,7 +11,7 @@ SERVICE_FILE=/etc/systemd/system/inbound-firewall-sync.service
 TIMER_FILE=/etc/systemd/system/inbound-firewall-sync.timer
 
 # Change this once before distributing the script to your servers.
-PORTS_URL='https://CHANGE-ME.invalid/inbound-firewall-ports.conf'
+PORTS_URL='https://raw.githubusercontent.com/AshGods/godsh/refs/heads/main/inbound-firewall-ports.conf'
 
 usage() {
   cat <<'EOF'
