@@ -538,10 +538,9 @@ cat > "$TIMER_FILE" <<'EOF'
 Description=每分钟同步入站防火墙端口白名单
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
+OnActiveSec=1min
+OnUnitInactiveSec=1min
 AccuracySec=5s
-Persistent=true
 Unit=inbound-firewall-sync.service
 
 [Install]
@@ -553,7 +552,7 @@ systemctl daemon-reload
 systemctl enable inbound-firewall-load.service >/dev/null || die '设置防火墙开机加载失败'
 systemctl enable inbound-firewall-sync.timer >/dev/null || die '设置定时同步失败'
 apply_rules 1
-systemctl start inbound-firewall-sync.timer >/dev/null || die '启动定时同步失败'
+systemctl restart inbound-firewall-sync.timer >/dev/null || die '启动定时同步失败'
 INSTALL_COMMITTED=1
 INSTALL_ROLLBACK_ARMED=0
 
